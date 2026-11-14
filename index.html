@@ -6,16 +6,78 @@
 <meta name="theme-color" content="#0d1021">
 <title>Breakout</title>
 <style>
+  :root { --bg: #0d1021; --panel: #171b33; --btn: #262b4d; --text: #e8eaf6; --muted: #a3a9cc; --accent: #8be9fd; }
   /* No scrolling, pinch/double-tap zoom, pull-to-refresh, text selection or long-press menu while playing on a phone. */
   html, body {
-    margin: 0; height: 100%; background: #0d1021; overflow: hidden;
+    margin: 0; height: 100%; background: var(--bg); overflow: hidden;
     touch-action: none; overscroll-behavior: none;
     user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text);
   }
+  /* Menus are plain HTML on top of the game canvas: real buttons are easy to tap, style, and use with a keyboard. */
+  #ui { position: fixed; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgb(13 16 33 / .75); }
+  #ui[hidden], .screen[hidden], #pauseBtn[hidden] { display: none; }
+  .screen { width: min(320px, 100%); background: var(--panel); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 12px; text-align: center; box-shadow: 0 10px 40px rgb(0 0 0 / .5); }
+  h1 { margin: 0 0 4px; font-size: 2.2rem; letter-spacing: .08em; }
+  h2 { margin: 0 0 4px; font-size: 1.6rem; }
+  .screen p { margin: 0; color: var(--muted); }
+  button, .seg label { font: inherit; font-size: 1.1rem; min-height: 48px; border: 0; border-radius: 10px; background: var(--btn); color: var(--text); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button.primary { background: var(--accent); color: var(--bg); font-weight: 700; }
+  button:hover, .seg label:hover { filter: brightness(1.15); }
+  button:focus-visible, .seg label:has(input:focus-visible), .row:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; }
+  a { color: var(--accent); padding: 8px; }
+  fieldset { border: 0; margin: 0; padding: 0; display: flex; gap: 6px; }
+  fieldset:disabled { opacity: .5; }
+  legend { color: var(--muted); padding: 0; margin-bottom: 6px; }
+  .seg label { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 1rem; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg label:has(input:checked) { background: var(--accent); color: var(--bg); font-weight: 700; }
+  .row { display: flex; align-items: center; justify-content: space-between; min-height: 48px; padding: 0 12px; background: var(--btn); border-radius: 10px; font-size: 1.1rem; cursor: pointer; }
+  .row input { width: 22px; height: 22px; accent-color: var(--accent); }
+  .hint { font-size: .85rem; }
+  #pauseBtn { position: fixed; z-index: 1; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: 48px; padding: 0; opacity: .85; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
 </head>
 <body>
+<div id="ui">
+  <section class="screen" id="main">
+    <h1>BREAKOUT</h1>
+    <p id="mainBest"></p>
+    <button class="primary" data-action="play">Play</button>
+    <button data-action="settings">Settings</button>
+    <a href="../">&larr; Back to Arcade</a>
+  </section>
+
+  <section class="screen" id="settings" hidden>
+    <h2>Settings</h2>
+    <fieldset class="seg" id="difficulty">
+      <legend>Difficulty</legend>
+      <label><input type="radio" name="difficulty" value="easy">Easy</label>
+      <label><input type="radio" name="difficulty" value="normal">Normal</label>
+      <label><input type="radio" name="difficulty" value="hard">Hard</label>
+    </fieldset>
+    <p class="hint" id="difficultyHint" hidden>Difficulty can be changed from the main menu.</p>
+    <label class="row">Sound <input type="checkbox" id="sound"></label>
+    <button data-action="back">Back</button>
+  </section>
+
+  <section class="screen" id="pause" hidden>
+    <h2>Paused</h2>
+    <button class="primary" data-action="resume">Resume</button>
+    <button data-action="settings">Settings</button>
+    <button data-action="menu">Main menu</button>
+  </section>
+
+  <section class="screen" id="over" hidden>
+    <h2>Game over</h2>
+    <p id="overScore"></p>
+    <button class="primary" data-action="play">Play again</button>
+    <button data-action="menu">Main menu</button>
+  </section>
+</div>
+<button id="pauseBtn" aria-label="Pause" hidden>&#10074;&#10074;</button>
+
 <script>
 // Phones held upright get a tall playfield so the game isn't tiny.
 // ponytail: layout is picked once at load; rotating mid-game just letterboxes. Re-layout on resize if that bothers anyone.
@@ -24,6 +86,21 @@ const W = PORTRAIT ? 600 : 800, H = PORTRAIT ? 900 : 600;
 const COLS = 10, BRICK_H = 24, GAP = 6;
 const BRICK_W = Math.floor((W * 0.88 - (COLS - 1) * GAP) / COLS);
 const COLORS = [0xff595e, 0xff924c, 0xffca3a, 0x8ac926, 0x52a675, 0x1982c4, 0x4267ac, 0x6a4c93];
+const DIFFICULTY = {
+  easy:   { label: 'Easy',   speed: 280, paddle: 150, lives: 5 },
+  normal: { label: 'Normal', speed: 340, paddle: 110, lives: 3 },
+  hard:   { label: 'Hard',   speed: 420, paddle: 80,  lives: 3 },
+};
+
+// Settings and best scores are saved in this browser. Private windows can block storage, so every access is guarded.
+const store = {
+  get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} },
+};
+const settings = { sound: true, difficulty: 'normal', ...store.get('breakout-settings', {}) };
+if (!DIFFICULTY[settings.difficulty]) settings.difficulty = 'normal';
+const saveSettings = () => store.set('breakout-settings', settings);
+const bestKey = () => `breakout-best-${settings.difficulty}`;
 
 // ponytail: WebAudio beeps instead of sound files; swap for real sfx via this.load.audio when wanted
 // Browsers (iPhones especially) only allow sound after a tap or key press, so the audio is created on the first one.
@@ -33,7 +110,7 @@ addEventListener('pointerup', unlockAudio);
 addEventListener('keydown', unlockAudio);
 
 function beep(freq, ms = 60) {
-  if (!audio) return;
+  if (!audio || !settings.sound) return;
   try {
     const o = audio.createOscillator(), g = audio.createGain();
     o.type = 'square';
@@ -46,9 +123,17 @@ function beep(freq, ms = 60) {
   } catch {}
 }
 
-function loadBest() { try { return Number(localStorage.getItem('breakout-best')) || 0; } catch { return 0; } }
-function saveBest(v) { try { localStorage.setItem('breakout-best', v); } catch {} }
+const $ = id => document.getElementById(id);
 
+// Show one menu screen (or none, while playing) and put keyboard focus on its main button.
+function showScreen(id) {
+  $('ui').hidden = !id;
+  for (const s of document.querySelectorAll('.screen')) s.hidden = s.id !== id;
+  if (id) $(id).querySelector('.primary, button')?.focus({ preventScroll: true });
+}
+
+// The game is always in one of these states: 'menu', 'playing', 'paused' or 'over'.
+// Only 'playing' accepts game input; the menus handle everything else.
 class Breakout extends Phaser.Scene {
   create() {
     // Textures are drawn in code, so there are no image files to load.
@@ -74,15 +159,86 @@ class Breakout extends Phaser.Scene {
     this.hud = this.add.text(16, 14, '', style);
     this.msg = this.add.text(W / 2, H / 2 + 70, '', { ...style, fontSize: '24px', align: 'center' }).setOrigin(0.5);
 
-    this.keys = this.input.keyboard.addKeys('LEFT,RIGHT,A,D,SPACE');
+    // false = don't swallow these keys, so Space/arrows still work on the menu buttons.
+    this.keys = this.input.keyboard.addKeys('LEFT,RIGHT,A,D,SPACE', false);
     this.keys.SPACE.on('down', () => this.launch());
     // Listen on the whole page, not just the canvas: on a phone your thumb can steer from
     // the empty space below the game instead of covering the paddle and ball.
     addEventListener('pointermove', e => this.steer(e));
-    addEventListener('pointerdown', e => { this.steer(e); this.launch(); });
+    addEventListener('pointerdown', e => {
+      if (e.target.closest?.('button, a, label')) return; // taps on menu controls aren't game input
+      this.steer(e);
+      this.launch();
+    });
+    addEventListener('keydown', e => { if (e.key === 'Escape' || e.key.toLowerCase() === 'p') this.togglePause(); });
+    // Switching apps or tabs mid-game opens the pause menu instead of letting the ball fall.
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.pause(); });
 
-    this.best = loadBest();
-    this.newGame();
+    this.wireMenus();
+    this.toMenu();
+  }
+
+  wireMenus() {
+    $('ui').addEventListener('click', e => {
+      const action = e.target.closest('button')?.dataset.action;
+      if (action === 'play') { this.newGame(); this.play(); }
+      else if (action === 'resume') this.resume();
+      else if (action === 'menu') this.toMenu();
+      else if (action === 'settings') this.openSettings();
+      else if (action === 'back') showScreen(this.settingsFrom);
+    });
+    $('pauseBtn').addEventListener('click', () => this.pause());
+
+    for (const r of document.querySelectorAll('input[name=difficulty]')) {
+      r.checked = r.value === settings.difficulty;
+      r.addEventListener('change', () => { settings.difficulty = r.value; saveSettings(); this.newGame(); });
+    }
+    $('sound').checked = settings.sound;
+    $('sound').addEventListener('change', e => { settings.sound = e.target.checked; saveSettings(); });
+  }
+
+  openSettings() {
+    // Difficulty is locked mid-game; changing it means starting over, so that's done from the main menu.
+    this.settingsFrom = this.state === 'paused' ? 'pause' : 'main';
+    const locked = this.settingsFrom === 'pause';
+    $('difficulty').disabled = locked;
+    $('difficultyHint').hidden = !locked;
+    showScreen('settings');
+  }
+
+  toMenu() {
+    this.sys.resume(); // does nothing unless we came here from the pause menu
+    this.state = 'menu';
+    this.newGame(); // the fresh level sits behind the menu as a backdrop
+    $('pauseBtn').hidden = true;
+    showScreen('main');
+  }
+
+  play() {
+    this.state = 'playing';
+    showScreen(null);
+    $('pauseBtn').hidden = false;
+    document.activeElement?.blur(); // so Space launches the ball instead of pressing a button
+  }
+
+  pause() {
+    if (this.state !== 'playing') return;
+    this.state = 'paused';
+    // Freezes physics, timers and update(); the frame stays drawn behind the menu.
+    // sys.pause/resume act immediately; this.scene.pause/resume wait for the next frame, which raced with menu clicks.
+    this.sys.pause();
+    $('pauseBtn').hidden = true;
+    showScreen('pause');
+  }
+
+  resume() {
+    this.sys.resume();
+    this.play();
+  }
+
+  togglePause() {
+    if (this.state === 'playing') this.pause();
+    else if (this.state === 'paused') this.resume();
   }
 
   clampPaddle(x) {
@@ -92,15 +248,22 @@ class Breakout extends Phaser.Scene {
 
   // Turn a screen x position into a game x position (the canvas is scaled to fit the screen).
   steer(e) {
+    if (this.state !== 'playing') return;
     const r = this.game.canvas.getBoundingClientRect();
     this.paddle.x = this.clampPaddle((e.clientX - r.left) * W / r.width);
   }
 
   newGame() {
+    const d = DIFFICULTY[settings.difficulty];
+    this.nextLevelTimer?.remove(); // drop a pending "next level" from a game that was abandoned
+    this.paddle.setDisplaySize(d.paddle, 16);
+    this.paddle.x = W / 2;
     this.score = 0;
-    this.lives = 3;
+    this.lives = d.lives;
     this.level = 1;
-    this.over = false;
+    this.newBest = false;
+    this.best = store.get(bestKey(), 0);
+    $('mainBest').textContent = `Best (${d.label}): ${this.best}`;
     this.buildLevel();
     this.resetBall();
   }
@@ -108,7 +271,7 @@ class Breakout extends Phaser.Scene {
   buildLevel() {
     this.bricks.clear(true, true);
     const rows = Math.min(3 + this.level, COLORS.length);
-    this.speed = Math.min(340 + 40 * (this.level - 1), 640);
+    this.speed = Math.min(DIFFICULTY[settings.difficulty].speed + 40 * (this.level - 1), 640);
     const left = (W - (COLS * BRICK_W + (COLS - 1) * GAP)) / 2 + BRICK_W / 2;
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < COLS; c++) {
@@ -128,8 +291,7 @@ class Breakout extends Phaser.Scene {
   }
 
   launch() {
-    if (this.over) return this.newGame();
-    if (!this.onPaddle) return;
+    if (this.state !== 'playing' || !this.onPaddle) return;
     this.onPaddle = false;
     this.msg.setText('');
     this.setBallAngle(Phaser.Math.Between(-30, 30));
@@ -152,14 +314,18 @@ class Breakout extends Phaser.Scene {
     brick.disableBody(true, false);
     this.tweens.add({ targets: brick, scale: 0, alpha: 0, duration: 150, onComplete: () => brick.destroy() });
     this.score += brick.getData('points');
-    if (this.score > this.best) { this.best = this.score; saveBest(this.best); }
+    if (this.score > this.best) {
+      this.best = this.score;
+      this.newBest = true;
+      store.set(bestKey(), this.best);
+    }
     beep(520 + (7 - brick.getData('row')) * 60);
     this.updateHud();
 
     if (this.bricks.countActive() === 0) {
       ball.setVelocity(0, 0);
       this.msg.setText('Level cleared!');
-      this.time.delayedCall(800, () => {
+      this.nextLevelTimer = this.time.delayedCall(800, () => {
         this.level++;
         this.buildLevel();
         this.resetBall();
@@ -172,9 +338,12 @@ class Breakout extends Phaser.Scene {
     beep(140, 250);
     this.updateHud();
     if (this.lives > 0) return this.resetBall();
-    this.over = true;
+    this.state = 'over';
     this.ball.setVelocity(0, 0);
-    this.msg.setText(`GAME OVER\nScore ${this.score}\nClick, tap or press Space to play again`);
+    this.msg.setText('');
+    $('pauseBtn').hidden = true;
+    $('overScore').textContent = `Score ${this.score}` + (this.newBest ? ' · New best!' : ` · Best ${this.best}`);
+    showScreen('over');
   }
 
   updateHud() {
@@ -182,13 +351,15 @@ class Breakout extends Phaser.Scene {
   }
 
   update(time, delta) {
-    let dir = 0;
-    if (this.keys.RIGHT.isDown || this.keys.D.isDown) dir++;
-    if (this.keys.LEFT.isDown || this.keys.A.isDown) dir--;
-    if (dir) this.paddle.x = this.clampPaddle(this.paddle.x + dir * 0.6 * delta);
+    if (this.state === 'playing') {
+      let dir = 0;
+      if (this.keys.RIGHT.isDown || this.keys.D.isDown) dir++;
+      if (this.keys.LEFT.isDown || this.keys.A.isDown) dir--;
+      if (dir) this.paddle.x = this.clampPaddle(this.paddle.x + dir * 0.6 * delta);
+    }
 
     if (this.onPaddle) this.ball.setPosition(this.paddle.x, this.paddle.y - 20);
-    else if (!this.over && this.ball.y > H + 20) this.loseLife();
+    else if (this.state === 'playing' && this.ball.y > H + 20) this.loseLife();
   }
 }
 
