@@ -2,25 +2,39 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1021">
 <title>Breakout</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #0d1021; overflow: hidden; }
-  canvas { touch-action: none; }
+  /* No scrolling, pinch/double-tap zoom, pull-to-refresh, text selection or long-press menu while playing on a phone. */
+  html, body {
+    margin: 0; height: 100%; background: #0d1021; overflow: hidden;
+    touch-action: none; overscroll-behavior: none;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
 </head>
 <body>
 <script>
-const W = 800, H = 600;
-const COLS = 10, BRICK_W = 64, BRICK_H = 24, GAP = 6;
+// Phones held upright get a tall playfield so the game isn't tiny.
+// ponytail: layout is picked once at load; rotating mid-game just letterboxes. Re-layout on resize if that bothers anyone.
+const PORTRAIT = innerHeight > innerWidth;
+const W = PORTRAIT ? 600 : 800, H = PORTRAIT ? 900 : 600;
+const COLS = 10, BRICK_H = 24, GAP = 6;
+const BRICK_W = Math.floor((W * 0.88 - (COLS - 1) * GAP) / COLS);
 const COLORS = [0xff595e, 0xff924c, 0xffca3a, 0x8ac926, 0x52a675, 0x1982c4, 0x4267ac, 0x6a4c93];
 
 // ponytail: WebAudio beeps instead of sound files; swap for real sfx via this.load.audio when wanted
+// Browsers (iPhones especially) only allow sound after a tap or key press, so the audio is created on the first one.
 let audio;
+function unlockAudio() { try { audio ??= new AudioContext(); audio.resume(); } catch {} }
+addEventListener('pointerup', unlockAudio);
+addEventListener('keydown', unlockAudio);
+
 function beep(freq, ms = 60) {
+  if (!audio) return;
   try {
-    audio ??= new AudioContext();
     const o = audio.createOscillator(), g = audio.createGain();
     o.type = 'square';
     o.frequency.value = freq;
@@ -62,8 +76,10 @@ class Breakout extends Phaser.Scene {
 
     this.keys = this.input.keyboard.addKeys('LEFT,RIGHT,A,D,SPACE');
     this.keys.SPACE.on('down', () => this.launch());
-    this.input.on('pointerdown', () => this.launch());
-    this.input.on('pointermove', p => { this.paddle.x = this.clampPaddle(p.x); });
+    // Listen on the whole page, not just the canvas: on a phone your thumb can steer from
+    // the empty space below the game instead of covering the paddle and ball.
+    addEventListener('pointermove', e => this.steer(e));
+    addEventListener('pointerdown', e => { this.steer(e); this.launch(); });
 
     this.best = loadBest();
     this.newGame();
@@ -72,6 +88,12 @@ class Breakout extends Phaser.Scene {
   clampPaddle(x) {
     const half = this.paddle.displayWidth / 2;
     return Phaser.Math.Clamp(x, half, W - half);
+  }
+
+  // Turn a screen x position into a game x position (the canvas is scaled to fit the screen).
+  steer(e) {
+    const r = this.game.canvas.getBoundingClientRect();
+    this.paddle.x = this.clampPaddle((e.clientX - r.left) * W / r.width);
   }
 
   newGame() {
