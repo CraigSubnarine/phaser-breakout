@@ -2,7 +2,8 @@
 
 Breakout-style game in Phaser 3. One `index.html`, no build step, no asset files (shapes and sounds are made in code).
 
-- **Play:** _(GitHub Pages link goes here once published)_
+- **Play:** https://craigsubnarine.github.io/phaser-breakout/
+- **Repo:** https://github.com/CraigSubnarine/phaser-breakout
 - **Run locally:** open `index.html` in a browser.
 - **Controls:** mouse/touch or arrow keys / A-D to move; click, tap or Space to launch.
 - **Status:** v1 playable. 3 lives, levels add a row and speed up, best score saved in the browser.
