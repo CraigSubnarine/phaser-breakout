@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Breakout</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1021; overflow: hidden; }
+  canvas { touch-action: none; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+</head>
+<body>
+<script>
+const W = 800, H = 600;
+const COLS = 10, BRICK_W = 64, BRICK_H = 24, GAP = 6;
+const COLORS = [0xff595e, 0xff924c, 0xffca3a, 0x8ac926, 0x52a675, 0x1982c4, 0x4267ac, 0x6a4c93];
+
+// ponytail: WebAudio beeps instead of sound files; swap for real sfx via this.load.audio when wanted
+let audio;
+function beep(freq, ms = 60) {
+  try {
+    audio ??= new AudioContext();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.type = 'square';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.06, audio.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + ms / 1000);
+    o.connect(g).connect(audio.destination);
+    o.start();
+    o.stop(audio.currentTime + ms / 1000);
+  } catch {}
+}
+
+function loadBest() { try { return Number(localStorage.getItem('breakout-best')) || 0; } catch { return 0; } }
+function saveBest(v) { try { localStorage.setItem('breakout-best', v); } catch {} }
+
+class Breakout extends Phaser.Scene {
+  create() {
+    // Textures are drawn in code, so there are no image files to load.
+    const g = this.make.graphics({ add: false });
+    g.fillStyle(0xffffff).fillRoundedRect(0, 0, 110, 16, 8).generateTexture('paddle', 110, 16);
+    g.clear().fillStyle(0xffffff).fillCircle(8, 8, 8).generateTexture('ball', 16, 16);
+    g.clear().fillStyle(0xffffff).fillRoundedRect(0, 0, BRICK_W, BRICK_H, 4).generateTexture('brick', BRICK_W, BRICK_H);
+    g.destroy();
+
+    // Walls on left, right and top; the bottom is open (that's how you lose a ball).
+    this.physics.world.setBoundsCollision(true, true, true, false);
+    this.physics.world.on('worldbounds', () => beep(300));
+
+    this.paddle = this.physics.add.image(W / 2, H - 40, 'paddle').setImmovable().setTint(0x8be9fd);
+    this.ball = this.physics.add.image(W / 2, H - 60, 'ball').setCollideWorldBounds(true).setBounce(1);
+    this.ball.body.onWorldBounds = true;
+    this.bricks = this.physics.add.staticGroup();
+
+    this.physics.add.collider(this.ball, this.bricks, this.hitBrick, null, this);
+    this.physics.add.collider(this.ball, this.paddle, this.hitPaddle, null, this);
+
+    const style = { fontFamily: 'monospace', fontSize: '20px', color: '#ffffff' };
+    this.hud = this.add.text(16, 14, '', style);
+    this.msg = this.add.text(W / 2, H / 2 + 70, '', { ...style, fontSize: '24px', align: 'center' }).setOrigin(0.5);
+
+    this.keys = this.input.keyboard.addKeys('LEFT,RIGHT,A,D,SPACE');
+    this.keys.SPACE.on('down', () => this.launch());
+    this.input.on('pointerdown', () => this.launch());
+    this.input.on('pointermove', p => { this.paddle.x = this.clampPaddle(p.x); });
+
+    this.best = loadBest();
+    this.newGame();
+  }
+
+  clampPaddle(x) {
+    const half = this.paddle.displayWidth / 2;
+    return Phaser.Math.Clamp(x, half, W - half);
+  }
+
+  newGame() {
+    this.score = 0;
+    this.lives = 3;
+    this.level = 1;
+    this.over = false;
+    this.buildLevel();
+    this.resetBall();
+  }
+
+  buildLevel() {
+    this.bricks.clear(true, true);
+    const rows = Math.min(3 + this.level, COLORS.length);
+    this.speed = Math.min(340 + 40 * (this.level - 1), 640);
+    const left = (W - (COLS * BRICK_W + (COLS - 1) * GAP)) / 2 + BRICK_W / 2;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const brick = this.bricks.create(left + c * (BRICK_W + GAP), 70 + r * (BRICK_H + GAP), 'brick');
+        brick.setTint(COLORS[r]).setData({ points: (rows - r) * 10, row: r });
+      }
+    }
+    this.updateHud();
+  }
+
+  resetBall() {
+    this.onPaddle = true;
+    this.ball.setVelocity(0, 0);
+    // Snap to the paddle now, or the ball (frozen where the last brick was) hits a new brick this frame.
+    this.ball.setPosition(this.paddle.x, this.paddle.y - 20);
+    this.msg.setText(`Level ${this.level}\nClick, tap or press Space to launch`);
+  }
+
+  launch() {
+    if (this.over) return this.newGame();
+    if (!this.onPaddle) return;
+    this.onPaddle = false;
+    this.msg.setText('');
+    this.setBallAngle(Phaser.Math.Between(-30, 30));
+  }
+
+  // Angle is measured from straight up: 0 = vertical, negative = left, positive = right.
+  setBallAngle(deg) {
+    const rad = Phaser.Math.DegToRad(deg);
+    this.ball.setVelocity(this.speed * Math.sin(rad), -this.speed * Math.cos(rad));
+  }
+
+  hitPaddle(ball, paddle) {
+    // Where the ball lands on the paddle steers it: edges send it out at up to 60 degrees.
+    const t = Phaser.Math.Clamp((ball.x - paddle.x) / (paddle.displayWidth / 2), -1, 1);
+    this.setBallAngle(t * 60);
+    beep(440);
+  }
+
+  hitBrick(ball, brick) {
+    brick.disableBody(true, false);
+    this.tweens.add({ targets: brick, scale: 0, alpha: 0, duration: 150, onComplete: () => brick.destroy() });
+    this.score += brick.getData('points');
+    if (this.score > this.best) { this.best = this.score; saveBest(this.best); }
+    beep(520 + (7 - brick.getData('row')) * 60);
+    this.updateHud();
+
+    if (this.bricks.countActive() === 0) {
+      ball.setVelocity(0, 0);
+      this.msg.setText('Level cleared!');
+      this.time.delayedCall(800, () => {
+        this.level++;
+        this.buildLevel();
+        this.resetBall();
+      });
+    }
+  }
+
+  loseLife() {
+    this.lives--;
+    beep(140, 250);
+    this.updateHud();
+    if (this.lives > 0) return this.resetBall();
+    this.over = true;
+    this.ball.setVelocity(0, 0);
+    this.msg.setText(`GAME OVER\nScore ${this.score}\nClick, tap or press Space to play again`);
+  }
+
+  updateHud() {
+    this.hud.setText(`Score ${this.score}   Lives ${this.lives}   Level ${this.level}   Best ${this.best}`);
+  }
+
+  update(time, delta) {
+    let dir = 0;
+    if (this.keys.RIGHT.isDown || this.keys.D.isDown) dir++;
+    if (this.keys.LEFT.isDown || this.keys.A.isDown) dir--;
+    if (dir) this.paddle.x = this.clampPaddle(this.paddle.x + dir * 0.6 * delta);
+
+    if (this.onPaddle) this.ball.setPosition(this.paddle.x, this.paddle.y - 20);
+    else if (!this.over && this.ball.y > H + 20) this.loseLife();
+  }
+}
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  width: W,
+  height: H,
+  backgroundColor: '#0d1021',
+  physics: { default: 'arcade' },
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: Breakout,
+});
+</script>
+</body>
+</html>
